@@ -42,13 +42,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showHelp = !m.showHelp
 			return m, nil
 
-		case key.Matches(msg, m.keys.Tab), key.Matches(msg, m.keys.Right):
+		case key.Matches(msg, m.keys.Tab):
 			m.nextView()
 			return m, nil
 
-		case key.Matches(msg, m.keys.ShiftTab), key.Matches(msg, m.keys.Left):
+		case key.Matches(msg, m.keys.ShiftTab):
 			m.prevView()
 			return m, nil
+
+		case key.Matches(msg, m.keys.Right):
+			// In the browser, → opens a folder (handled by the view). Elsewhere
+			// it switches to the next tab.
+			if m.activeView != ViewBrowser {
+				m.nextView()
+				return m, nil
+			}
+
+		case key.Matches(msg, m.keys.Left):
+			// In the browser, ← goes to the parent folder (handled by the view).
+			// Elsewhere it switches to the previous tab.
+			if m.activeView != ViewBrowser {
+				m.prevView()
+				return m, nil
+			}
 
 		case key.Matches(msg, m.keys.Buckets):
 			m.activeView = ViewBuckets
@@ -63,17 +79,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case key.Matches(msg, m.keys.Cancel):
+			// Cancel an in-progress download first.
 			if m.activeView == ViewDownload && m.downloadView.IsActive() {
 				if m.downloadMgr != nil {
 					m.downloadMgr.Cancel()
 				}
 				return m, nil
 			}
-			// Close help if open
+			// Close help if open.
 			if m.showHelp {
 				m.showHelp = false
 				return m, nil
 			}
+			// If the active view is filtering, let it handle Esc (cancel filter)
+			// instead of quitting.
+			if m.isActiveViewFiltering() {
+				break
+			}
+			// Otherwise Esc quits the app.
+			m.cancel()
+			return m, tea.Quit
 
 		case key.Matches(msg, m.keys.Refresh):
 			return m.handleRefresh()
@@ -267,6 +292,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// isActiveViewFiltering reports whether the currently active list view is in
+// filter-input mode, in which case Esc should cancel the filter rather than
+// quit the app.
+func (m Model) isActiveViewFiltering() bool {
+	switch m.activeView {
+	case ViewProfiles:
+		return m.profilesView.IsFiltering()
+	case ViewBuckets:
+		return m.bucketsView.IsFiltering()
+	case ViewBrowser:
+		return m.browserView.IsFiltering()
+	case ViewBookmarks:
+		return m.bookmarksView.IsFiltering()
+	}
+	return false
+}
+
 func (m *Model) nextView() {
 	switch m.activeView {
 	case ViewBuckets:
@@ -299,6 +341,7 @@ func (m Model) handleRefresh() (tea.Model, tea.Cmd) {
 		m.bucketsView.SetLoading(true)
 		return m, m.loadBuckets()
 	case ViewBrowser:
+		m.browserView.RememberCursor()
 		m.browserView.SetLoading(true)
 		return m, m.loadObjects()
 	case ViewBookmarks:

@@ -71,6 +71,10 @@ type Model struct {
 	width   int
 	height  int
 
+	// cursorByPrefix remembers the cursor position for each visited prefix so
+	// navigating back (or refreshing) restores where the user was.
+	cursorByPrefix map[string]int
+
 	// Multi-select
 	selected map[string]bool // map of Key -> selected
 
@@ -102,9 +106,10 @@ func New() Model {
 		Padding(0, 1)
 
 	return Model{
-		list:     l,
-		history:  []string{},
-		selected: make(map[string]bool),
+		list:           l,
+		history:        []string{},
+		selected:       make(map[string]bool),
+		cursorByPrefix: make(map[string]int),
 	}
 }
 
@@ -115,12 +120,25 @@ func (m *Model) SetSize(width, height int) {
 	m.list.SetSize(width, height-2) // Reserve space for path
 }
 
+// IsFiltering reports whether a filter is active (being typed or applied), so
+// callers can let the list handle Esc (cancel/clear filter) instead of quitting.
+func (m Model) IsFiltering() bool {
+	return m.list.FilterState() != list.Unfiltered
+}
+
+// RememberCursor saves the current cursor position for the current prefix so a
+// subsequent reload (e.g. refresh) can restore it.
+func (m *Model) RememberCursor() {
+	m.cursorByPrefix[m.prefix] = m.list.Index()
+}
+
 // SetBucket sets the current bucket
 func (m *Model) SetBucket(bucket string) {
 	m.bucket = bucket
 	m.prefix = ""
 	m.history = []string{}
 	m.selected = make(map[string]bool) // Clear selection
+	m.cursorByPrefix = make(map[string]int)
 	m.updateTitle()
 }
 
@@ -141,6 +159,17 @@ func (m *Model) SetObjects(objects []aws.S3Object) {
 		items[i] = Item{object: obj, selected: false}
 	}
 	m.list.SetItems(items)
+
+	// Restore the remembered cursor position for this prefix.
+	if idx, ok := m.cursorByPrefix[m.prefix]; ok && len(objects) > 0 {
+		if idx >= len(objects) {
+			idx = len(objects) - 1
+		}
+		if idx < 0 {
+			idx = 0
+		}
+		m.list.Select(idx)
+	}
 }
 
 // SetError sets an error state
@@ -201,10 +230,11 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		case key.Matches(msg, key.NewBinding(key.WithKeys("enter", "right"))):
 			if item, ok := m.list.SelectedItem().(Item); ok {
 				if item.object.IsPrefix {
-					// Navigate into prefix
+					// Remember where we are, then navigate into the prefix
+					m.cursorByPrefix[m.prefix] = m.list.Index()
 					m.history = append(m.history, m.prefix)
 					m.prefix = item.object.Key
 					m.selectedObject = item.object
@@ -214,8 +244,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				}
 			}
 
-		case key.Matches(msg, key.NewBinding(key.WithKeys("backspace"))):
+		case key.Matches(msg, key.NewBinding(key.WithKeys("backspace", "left"))):
 			if len(m.history) > 0 {
+				m.cursorByPrefix[m.prefix] = m.list.Index()
 				m.prefix = m.history[len(m.history)-1]
 				m.history = m.history[:len(m.history)-1]
 				m.action = ActionBack
@@ -223,11 +254,15 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				return m, nil
 			} else if m.prefix != "" {
 				// Go back to bucket root
+				m.cursorByPrefix[m.prefix] = m.list.Index()
 				m.prefix = ""
 				m.action = ActionBack
 				m.updateTitle()
 				return m, nil
 			}
+			// At bucket root with no history: swallow so it doesn't fall
+			// through (the global handler already declined to switch tabs).
+			return m, nil
 
 		case key.Matches(msg, key.NewBinding(key.WithKeys("d"))):
 			// Download selected items, or current item if none selected

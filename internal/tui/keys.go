@@ -52,11 +52,11 @@ func DefaultKeyMap() KeyMap {
 		),
 		Left: key.NewBinding(
 			key.WithKeys("left"),
-			key.WithHelp("←", "prev tab"),
+			key.WithHelp("←", "back/prev tab"),
 		),
 		Right: key.NewBinding(
 			key.WithKeys("right"),
-			key.WithHelp("→", "next tab"),
+			key.WithHelp("→", "open/next tab"),
 		),
 		Enter: key.NewBinding(
 			key.WithKeys("enter"),
@@ -128,7 +128,7 @@ func DefaultKeyMap() KeyMap {
 		),
 		Cancel: key.NewBinding(
 			key.WithKeys("esc"),
-			key.WithHelp("esc", "cancel"),
+			key.WithHelp("esc", "cancel/quit"),
 		),
 		Help: key.NewBinding(
 			key.WithKeys("?"),
@@ -143,15 +143,15 @@ func DefaultKeyMap() KeyMap {
 
 // ShortHelp returns keybindings for the short help view
 func (k KeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Help, k.Quit}
+	return []key.Binding{k.Help, k.Cancel, k.Quit}
 }
 
 // FullHelp returns keybindings for the expanded help view
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.Enter, k.Back},
+		{k.Up, k.Down, k.Right, k.Left},
 		{k.Tab, k.Buckets, k.Browser, k.Bookmarks},
 		{k.Download, k.Sync, k.AddBookmark, k.Refresh},
-		{k.Help, k.Quit},
+		{k.Help, k.Cancel, k.Quit},
 	}
 }

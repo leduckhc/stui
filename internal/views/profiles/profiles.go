@@ -87,6 +87,12 @@ func (m *Model) SetSize(width, height int) {
 	m.list.SetSize(width, height)
 }
 
+// IsFiltering reports whether a filter is active (being typed or applied), so
+// callers can let the list handle Esc (cancel/clear filter) instead of quitting.
+func (m Model) IsFiltering() bool {
+	return m.list.FilterState() != list.Unfiltered
+}
+
 // LoadEntries loads selectable entries from all providers (aws profiles, mc
 // aliases, stui endpoints). Healthy providers are always loaded; a non-nil
 // error reports providers that failed to load (e.g. a malformed config) without

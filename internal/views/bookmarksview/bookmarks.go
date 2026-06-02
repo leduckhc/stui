@@ -74,6 +74,12 @@ func (m *Model) SetSize(width, height int) {
 	m.list.SetSize(width, height)
 }
 
+// IsFiltering reports whether a filter is active (being typed or applied), so
+// callers can let the list handle Esc (cancel/clear filter) instead of quitting.
+func (m Model) IsFiltering() bool {
+	return m.list.FilterState() != list.Unfiltered
+}
+
 // SetStore sets the bookmark store
 func (m *Model) SetStore(store *bookmarks.Store) {
 	m.store = store
