@@ -84,16 +84,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadDemoBuckets()
 
 	case profilesReadyMsg:
-		// Load available profiles
-		if err := m.profilesView.LoadProfiles(); err != nil {
+		// Load available profiles/aliases from all providers
+		if err := m.profilesView.LoadEntries(); err != nil {
 			m.errorMsg = security.SanitizeErrorGeneric(err, "Failed to load profiles")
 			m.errorTimeout = time.Now().Add(5 * time.Second)
 		}
 		return m, nil
 
 	case profiles.SelectedMsg:
-		// Profile was selected, initialize AWS with it
+		// Profile/alias was selected, initialize AWS with it
 		m.profile = msg.Profile
+		m.providerHint = msg.Provider
 		m.activeView = ViewBuckets
 		m.bucketsView.SetLoading(true)
 		return m, m.initAWS()

@@ -8,6 +8,7 @@ import (
 	"github.com/natevick/stui/internal/aws"
 	"github.com/natevick/stui/internal/bookmarks"
 	"github.com/natevick/stui/internal/download"
+	"github.com/natevick/stui/internal/providers"
 	"github.com/natevick/stui/internal/views/bookmarksview"
 	"github.com/natevick/stui/internal/views/browser"
 	"github.com/natevick/stui/internal/views/buckets"
@@ -19,8 +20,10 @@ import (
 type Model struct {
 	// AWS
 	client        *aws.Client
-	profile       string
+	profile       string // profile/alias name (from --profile/--alias or picker)
+	providerHint  string // explicit provider (from --provider or picker); "" = auto-resolve
 	region        string
+	endpoint      string // custom S3 endpoint (from --endpoint-url), overrides resolved
 	initialBucket string // bucket to start in (from --bucket flag)
 	demoMode      bool   // use mock data
 
@@ -65,9 +68,11 @@ type Model struct {
 
 // Config holds configuration for the TUI
 type Config struct {
-	Profile  string
+	Profile  string // profile (aws/stui) or alias (minio) name
+	Provider string // explicit provider: aws|minio|stui; "" = auto-resolve
 	Region   string
 	Bucket   string // Start directly in this bucket
+	Endpoint string // Custom S3 endpoint URL (MinIO/SeaweedFS/etc.)
 	DemoMode bool   // Use mock data instead of real AWS
 }
 
@@ -86,7 +91,9 @@ func New(cfg Config) Model {
 
 	return Model{
 		profile:       cfg.Profile,
+		providerHint:  cfg.Provider,
 		region:        cfg.Region,
+		endpoint:      cfg.Endpoint,
 		initialBucket: cfg.Bucket,
 		demoMode:      cfg.DemoMode,
 		activeView:    activeView,
@@ -148,10 +155,27 @@ func (m Model) initDemo() tea.Cmd {
 // demoReadyMsg is sent when demo mode is ready
 type demoReadyMsg struct{}
 
-// initAWS initializes the AWS client
+// initAWS initializes the AWS client by resolving the requested profile/alias
+// across the configured providers (aws, minio, stui). There is never any
+// fallback between providers; an ambiguous name produces a clear error asking
+// the user to pass --provider.
 func (m Model) initAWS() tea.Cmd {
 	return func() tea.Msg {
-		client, err := aws.NewClient(m.ctx, m.profile, m.region)
+		entry, err := providers.Resolve(m.profile, m.providerHint)
+		if err != nil {
+			return ErrorMsg{Err: err}
+		}
+
+		opts := entry.ClientOptions()
+		// CLI overrides.
+		if m.region != "" {
+			opts.Region = m.region
+		}
+		if m.endpoint != "" {
+			opts.Endpoint = m.endpoint
+		}
+
+		client, err := aws.NewClientWithOptions(m.ctx, opts)
 		if err != nil {
 			return ErrorMsg{Err: err}
 		}

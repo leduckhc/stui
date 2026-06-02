@@ -2,38 +2,53 @@ package profiles
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/natevick/stui/internal/aws"
+	"github.com/natevick/stui/internal/providers"
 )
 
-// Item represents a profile in the list
+// Item represents a provider entry in the list
 type Item struct {
-	profile aws.ProfileInfo
+	entry providers.Entry
 }
 
-func (i Item) Title() string { return i.profile.Name }
+func (i Item) Title() string {
+	return fmt.Sprintf("%s  [%s]", i.entry.Name, i.entry.Provider)
+}
 func (i Item) Description() string {
-	desc := fmt.Sprintf("Region: %s", i.profile.Region)
-	if i.profile.AccountID != "" {
-		desc += fmt.Sprintf(" | Account: %s", i.profile.AccountID)
+	parts := []string{}
+	if i.entry.Region != "" {
+		parts = append(parts, "Region: "+i.entry.Region)
 	}
-	return desc
+	if i.entry.AccountID != "" {
+		parts = append(parts, "Account: "+i.entry.AccountID)
+	}
+	if i.entry.Endpoint != "" {
+		parts = append(parts, "Endpoint: "+i.entry.Endpoint)
+	}
+	if len(parts) == 0 {
+		return i.entry.Provider
+	}
+	return strings.Join(parts, " | ")
 }
-func (i Item) FilterValue() string { return i.profile.Name }
 
-// SelectedMsg is sent when a profile is selected
+// FilterValue lets the user filter by both name and provider.
+func (i Item) FilterValue() string { return i.entry.Name + " " + i.entry.Provider }
+
+// SelectedMsg is sent when a profile/alias is selected
 type SelectedMsg struct {
-	Profile string
+	Profile  string
+	Provider string
 }
 
 // Model is the profile picker view model
 type Model struct {
 	list     list.Model
-	profiles []aws.ProfileInfo
+	entries  []providers.Entry
 	width    int
 	height   int
 	selected string
@@ -51,7 +66,7 @@ func New() Model {
 		Background(lipgloss.Color("39"))
 
 	l := list.New([]list.Item{}, delegate, 0, 0)
-	l.Title = "Select AWS Profile"
+	l.Title = "Select Profile / Alias"
 	l.SetShowStatusBar(true)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(false)
@@ -72,20 +87,19 @@ func (m *Model) SetSize(width, height int) {
 	m.list.SetSize(width, height)
 }
 
-// LoadProfiles loads available AWS profiles
-func (m *Model) LoadProfiles() error {
-	profiles, err := aws.ListProfiles()
-	if err != nil {
-		return err
-	}
-
-	m.profiles = profiles
-	items := make([]list.Item, len(profiles))
-	for i, p := range profiles {
-		items[i] = Item{profile: p}
+// LoadEntries loads selectable entries from all providers (aws profiles, mc
+// aliases, stui endpoints). Healthy providers are always loaded; a non-nil
+// error reports providers that failed to load (e.g. a malformed config) without
+// hiding the ones that worked.
+func (m *Model) LoadEntries() error {
+	entries, err := providers.List()
+	m.entries = entries
+	items := make([]list.Item, len(m.entries))
+	for i, e := range m.entries {
+		items[i] = Item{entry: e}
 	}
 	m.list.SetItems(items)
-	return nil
+	return err
 }
 
 // SelectedProfile returns the selected profile name
@@ -109,9 +123,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 		if key.Matches(msg, key.NewBinding(key.WithKeys("enter"))) {
 			if item, ok := m.list.SelectedItem().(Item); ok {
-				m.selected = item.profile.Name
+				m.selected = item.entry.Name
+				entry := item.entry
 				return m, func() tea.Msg {
-					return SelectedMsg{Profile: item.profile.Name}
+					return SelectedMsg{Profile: entry.Name, Provider: entry.Provider}
 				}
 			}
 		}
@@ -124,14 +139,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 // View renders the view
 func (m Model) View() string {
-	if len(m.profiles) == 0 {
+	if len(m.entries) == 0 {
 		style := lipgloss.NewStyle().
 			Width(m.width).
 			Height(m.height).
 			Align(lipgloss.Center, lipgloss.Center).
 			Foreground(lipgloss.Color("196"))
 
-		return style.Render("No AWS SSO profiles found in ~/.aws/config\n\nRun 'aws configure sso' to set up a profile")
+		return style.Render("No profiles or aliases found.\n\nConfigure an AWS profile (~/.aws/config), an mc alias (~/.mc/config.json),\nor a stui endpoint (~/.config/stui/config.json).")
 	}
 
 	return m.list.View()

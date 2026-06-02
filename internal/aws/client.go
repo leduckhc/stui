@@ -10,48 +10,136 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 // Client wraps the AWS S3 client with configuration
 type Client struct {
-	S3      *s3.Client
-	Config  aws.Config
-	Profile string
-	Region  string
+	S3       *s3.Client
+	Config   aws.Config
+	Profile  string
+	Region   string
+	Endpoint string
+
+	// opts is retained so WithRegion can rebuild an equivalent client
+	// (preserving endpoint, path-style and static credentials).
+	opts ClientOptions
 }
 
-// NewClient creates a new AWS client with the specified profile
-// Supports SSO profiles - user must run `aws sso login --profile <profile>` first
+// ClientOptions configures how the AWS/S3 client is built.
+type ClientOptions struct {
+	Profile  string
+	Region   string
+	Endpoint string // custom S3-compatible endpoint URL; "" for real AWS
+	// PathStyle forces path-style addressing. If nil, it defaults to true
+	// whenever a custom Endpoint is in effect (required by most S3-compatible
+	// servers).
+	PathStyle *bool
+	// Static credentials. When AccessKeyID and SecretAccessKey are both set,
+	// they are used directly instead of the AWS profile / default credential
+	// chain. SessionToken is optional (for temporary credentials).
+	AccessKeyID     string
+	SecretAccessKey string
+	SessionToken    string
+}
+
+// NewClient creates a new AWS client with the specified profile.
+// Supports SSO profiles - user must run `aws sso login --profile <profile>` first.
 func NewClient(ctx context.Context, profile, region string) (*Client, error) {
-	var opts []func(*config.LoadOptions) error
+	return NewClientWithOptions(ctx, ClientOptions{Profile: profile, Region: region})
+}
 
-	if profile != "" {
-		opts = append(opts, config.WithSharedConfigProfile(profile))
+// NewClientWithOptions creates a new AWS client, optionally pointed at a custom
+// S3-compatible endpoint (SeaweedFS, MinIO, Ceph, etc.).
+//
+// Region and SSO are loaded from the standard AWS config (~/.aws/config,
+// ~/.aws/credentials) via the SDK. Credentials come from opts.AccessKeyID /
+// opts.SecretAccessKey when both are set (used directly, bypassing any AWS
+// profile); otherwise from the named profile / SDK default chain. The custom
+// endpoint is supplied by stui's own config (see internal/config), an mc alias
+// (see internal/providers), or the --endpoint-url flag; stui never extends the
+// AWS config schema itself.
+//
+// The endpoint actually used is, in order of precedence: opts.Endpoint, then
+// anything the SDK itself resolved from standard config or AWS_ENDPOINT_URL[_S3]
+// env vars. When any custom endpoint is in effect, path-style addressing is
+// enabled unless opts.PathStyle explicitly disables it.
+func NewClientWithOptions(ctx context.Context, opts ClientOptions) (*Client, error) {
+	var loadOpts []func(*config.LoadOptions) error
+
+	useStaticCreds := opts.AccessKeyID != "" && opts.SecretAccessKey != ""
+
+	// With static credentials the endpoint is self-contained (the "profile" may
+	// exist only in stui's config, not in ~/.aws), so don't try to load a shared
+	// AWS profile that might not exist.
+	if opts.Profile != "" && !useStaticCreds {
+		loadOpts = append(loadOpts, config.WithSharedConfigProfile(opts.Profile))
+	}
+	if opts.Region != "" {
+		loadOpts = append(loadOpts, config.WithRegion(opts.Region))
 	}
 
-	if region != "" {
-		opts = append(opts, config.WithRegion(region))
+	// Use static credentials from stui config when provided, bypassing the AWS
+	// profile / default credential chain.
+	if useStaticCreds {
+		loadOpts = append(loadOpts, config.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(
+				opts.AccessKeyID, opts.SecretAccessKey, opts.SessionToken,
+			),
+		))
 	}
 
-	cfg, err := config.LoadDefaultConfig(ctx, opts...)
+	cfg, err := config.LoadDefaultConfig(ctx, loadOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	s3Client := s3.NewFromConfig(cfg)
+	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		if opts.Endpoint != "" {
+			o.BaseEndpoint = aws.String(opts.Endpoint)
+		}
+	})
+
+	// Determine the endpoint actually in effect (explicit, or SDK-resolved from
+	// AWS_ENDPOINT_URL[_S3] env vars).
+	resolvedEndpoint := opts.Endpoint
+	if resolvedEndpoint == "" && s3Client.Options().BaseEndpoint != nil {
+		resolvedEndpoint = *s3Client.Options().BaseEndpoint
+	}
+
+	// Decide on path-style addressing: explicit override, else default to true
+	// whenever a custom endpoint is in effect.
+	pathStyle := s3Client.Options().UsePathStyle
+	if opts.PathStyle != nil {
+		pathStyle = *opts.PathStyle
+	} else if resolvedEndpoint != "" {
+		pathStyle = true
+	}
+
+	if resolvedEndpoint != "" && pathStyle != s3Client.Options().UsePathStyle {
+		s3Client = s3.NewFromConfig(cfg, func(o *s3.Options) {
+			o.BaseEndpoint = aws.String(resolvedEndpoint)
+			o.UsePathStyle = pathStyle
+		})
+	}
 
 	return &Client{
-		S3:      s3Client,
-		Config:  cfg,
-		Profile: profile,
-		Region:  cfg.Region,
+		S3:       s3Client,
+		Config:   cfg,
+		Profile:  opts.Profile,
+		Region:   cfg.Region,
+		Endpoint: resolvedEndpoint,
+		opts:     opts,
 	}, nil
 }
 
-// WithRegion creates a new client with a different region
+// WithRegion creates a new client with a different region, preserving the
+// original endpoint, path-style and credential settings.
 func (c *Client) WithRegion(ctx context.Context, region string) (*Client, error) {
-	return NewClient(ctx, c.Profile, region)
+	opts := c.opts
+	opts.Region = region
+	return NewClientWithOptions(ctx, opts)
 }
 
 // ProfileInfo contains information about an AWS profile
@@ -72,6 +160,11 @@ func ListProfiles() ([]ProfileInfo, error) {
 	configPath := filepath.Join(homeDir, ".aws", "config")
 	file, err := os.Open(configPath)
 	if err != nil {
+		// No AWS config is fine: the user may rely solely on stui's own config
+		// (e.g. a self-contained MinIO/SeaweedFS endpoint).
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("failed to open AWS config: %w", err)
 	}
 	defer file.Close()
@@ -90,8 +183,8 @@ func ListProfiles() ([]ProfileInfo, error) {
 
 		// Check for section header
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			// Save previous profile if it exists and has SSO config
-			if currentProfile != nil && currentProfile.SSOSession != "" {
+			// Save previous profile if it exists
+			if currentProfile != nil {
 				profiles = append(profiles, *currentProfile)
 			}
 
@@ -133,7 +226,7 @@ func ListProfiles() ([]ProfileInfo, error) {
 	}
 
 	// Don't forget the last profile
-	if currentProfile != nil && currentProfile.SSOSession != "" {
+	if currentProfile != nil {
 		profiles = append(profiles, *currentProfile)
 	}
 
