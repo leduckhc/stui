@@ -96,14 +96,18 @@ stui --demo
 | Key | Action |
 |-----|--------|
 | `↑/k`, `↓/j` | Move up/down |
-| `Enter` | Open folder / Select |
-| `Backspace` | Go back |
+| `Enter`, `→` | Open folder / Select |
+| `Backspace`, `←` | Go back to parent folder |
 | `PgUp/PgDn` | Page up/down |
+
+In the **Browser**, `←`/`→` move through the folder hierarchy (and your cursor
+position is remembered when you navigate back). In the other views they switch
+tabs.
 
 ### Views
 | Key | Action |
 |-----|--------|
-| `←/→` | Switch tabs |
+| `←/→` | Switch tabs (folder navigation in Browser) |
 | `Tab` | Next tab |
 | `Shift+Tab` | Previous tab |
 | `1/2/3` | Jump to tab |
@@ -122,7 +126,7 @@ stui --demo
 | Key | Action |
 |-----|--------|
 | `?` | Toggle help |
-| `Esc` | Cancel / Close |
+| `Esc` | Cancel / Close, or quit when there's nothing to cancel |
 | `q` | Quit |
 
 ## Configuration
